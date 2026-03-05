@@ -1,16 +1,41 @@
 const express = require('express');
 const http = require('http');
+const WebSocket = require('ws');
 const socketIo = require('socket.io');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const axios = require('axios');
 const rateLimit = require('express-rate-limit');
 const KMeans = require('ml-kmeans');
+const mongoose = require('mongoose');
+const User = require('./models/User');
+const Room = require('./models/Room');
 require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, { cors: { origin: '*' } });
+
+// Attach Yjs WebSocket server
+const wss = new WebSocket.Server({ noServer: true });
+const setupWSConnection = require('y-websocket/bin/utils').setupWSConnection;
+
+server.on('upgrade', (request, socket, head) => {
+  // You may check auth here
+  const handleAuth = (ws) => {
+    wss.emit('connection', ws, request);
+  };
+  wss.handleUpgrade(request, socket, head, handleAuth);
+});
+
+wss.on('connection', setupWSConnection);
+
+// Connect to MongoDB
+mongoose.connect('mongodb://127.0.0.1:27017/codeforge', {
+  useNewUrlParser: true,
+  useUnifiedTopology: true
+}).then(() => console.log('MongoDB Connected'))
+  .catch(err => console.error('MongoDB Connection Error:', err));
 
 app.use(cors());
 app.use(express.json());
@@ -37,25 +62,59 @@ function authenticateToken(req, res, next) {
   });
 }
 
-// Auth: Simple login (username only for hack)
-app.post('/auth/login', async (req, res) => {
-  const { username } = req.body;
-  if (!username) return res.status(400).json({ error: 'Username required' });
-  const token = jwt.sign({ username }, SECRET, { expiresIn: '24h' });
-  res.json({ token, username });
+// Auth: Register
+app.post('/auth/register', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    let user = await User.findOne({ username });
+    if (user) return res.status(400).json({ error: 'Username taken' });
+
+    // In production we would hash password here
+    user = new User({ username, password });
+    await user.save();
+
+    const token = jwt.sign({ userId: user._id, username }, SECRET, { expiresIn: '24h' });
+    res.json({ token, username, userId: user._id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// Rooms: Create/join (POST for create)
-app.post('/rooms', authenticateToken, (req, res) => {
-  const { roomId } = req.body;
-  if (!roomId) return res.status(400).json({ error: 'Room ID required' });
-  res.json({ roomId, message: 'Room ready' });
+// Auth: Login
+app.post('/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    const user = await User.findOne({ username, password });
+    if (!user) return res.status(400).json({ error: 'Invalid credentials' });
+
+    const token = jwt.sign({ userId: user._id, username }, SECRET, { expiresIn: '24h' });
+    res.json({ token, username, userId: user._id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Rooms: Create/join
+app.post('/rooms', authenticateToken, async (req, res) => {
+  try {
+    const { roomId, name } = req.body;
+    if (!roomId) return res.status(400).json({ error: 'Room ID required' });
+
+    let room = await Room.findOne({ roomId });
+    if (!room) {
+      room = new Room({ roomId, name: name || roomId, owner: req.user.userId });
+      await room.save();
+    }
+    res.json({ roomId: room.roomId, name: room.name, message: 'Room ready' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // AI Completion: Hugging Face + Personalization
 app.post('/ai/complete', authenticateToken, async (req, res) => {
   const { prompt, context, patterns } = req.body; // patterns: {react: 5, node: 2}
-  
+
   // Simple personalization: Bias prompt based on clustered patterns
   let biasedPrompt = prompt;
   if (patterns) {
