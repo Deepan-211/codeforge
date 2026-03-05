@@ -143,6 +143,36 @@ app.get('/demo', (req, res) => {
   res.json({ roomId: 'hackathon-demo', seedCode: '// Welcome to CodeForge AI!' });
 });
 
+// Code execution endpoint (Using Piston API)
+app.post('/api/execute', authenticateToken, async (req, res) => {
+  const { language, sourceCode, args } = req.body;
+  if (!language || !sourceCode) {
+    return res.status(400).json({ error: 'Language and source code are required' });
+  }
+
+  try {
+    const response = await axios.post('https://emkc.org/api/v2/piston/execute', {
+      language: language,
+      version: '*',
+      files: [{ content: sourceCode }],
+      args: args || [],
+      // Optional settings
+      compile_timeout: 10000,
+      run_timeout: 3000,
+      compile_memory_limit: -1,
+      run_memory_limit: -1
+    });
+
+    res.json(response.data);
+  } catch (error) {
+    console.error('Code execution error:', error.response?.data || error.message);
+    res.status(500).json({
+      error: 'Failed to execute code',
+      details: error.response?.data || error.message
+    });
+  }
+});
+
 // Sockets: Real-time collab
 let userRooms = {}; // Track users in rooms
 io.on('connection', (socket) => {

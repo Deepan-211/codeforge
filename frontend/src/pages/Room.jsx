@@ -7,10 +7,17 @@ import * as Y from 'yjs';
 import { WebsocketProvider } from 'y-websocket';
 import { yCollab } from 'y-codemirror.next';
 import { io } from 'socket.io-client';
-import { Users, Send, Wand2, ArrowLeft } from 'lucide-react';
+import { Users, Send, Wand2, ArrowLeft, Play, TerminalSquare } from 'lucide-react';
 import axios from 'axios';
 
 const socket = io('http://localhost:5000'); // Or your backend URL
+
+const SUPPORTED_LANGUAGES = [
+    { name: 'JavaScript', value: 'javascript' },
+    { name: 'Python', value: 'python' },
+    { name: 'C++', value: 'cpp' },
+    { name: 'Java', value: 'java' },
+];
 
 export default function Room() {
     const { roomId } = useParams();
@@ -24,6 +31,12 @@ export default function Room() {
     const [aiSuggestion, setAiSuggestion] = useState('');
     const [isAiLoading, setIsAiLoading] = useState(false);
     const typingTimeoutRef = useRef(null);
+
+    // Compiler state
+    const [selectedLanguage, setSelectedLanguage] = useState('javascript');
+    const [output, setOutput] = useState('');
+    const [isCompiling, setIsCompiling] = useState(false);
+    const [isOutputVisible, setIsOutputVisible] = useState(true);
 
     // Yjs state
     const ydocRef = useRef(new Y.Doc());
@@ -136,6 +149,37 @@ export default function Room() {
         }
     };
 
+    const handleRunCode = async () => {
+        setIsCompiling(true);
+        setOutput('Executing code...');
+        setIsOutputVisible(true);
+        try {
+            const currentCode = ydocRef.current.getText('monaco').toString();
+            const token = localStorage.getItem('token');
+            const res = await axios.post('http://localhost:5000/api/execute', {
+                language: selectedLanguage,
+                sourceCode: currentCode
+            }, {
+                headers: { Authorization: `Bearer ${token || 'test'}` }
+            });
+
+            if (res.data.compile && res.data.compile.stderr) {
+                setOutput(`Compilation Error:\n${res.data.compile.stderr}`);
+            } else if (res.data.run && res.data.run.stderr) {
+                setOutput(`Runtime Error:\n${res.data.run.stderr}\n\nOutput:\n${res.data.run.stdout}`);
+            } else if (res.data.run) {
+                setOutput(res.data.run.stdout || 'Program executed successfully with no output.');
+            } else {
+                setOutput('Unhandled response format.');
+            }
+        } catch (err) {
+            console.error(err);
+            setOutput(`Error: ${err.response?.data?.error || err.message}`);
+        } finally {
+            setIsCompiling(false);
+        }
+    };
+
     return (
         <div className="flex-1 flex gap-4 p-4 max-w-screen-2xl mx-auto w-full h-[calc(100vh-4rem)]">
             {/* Editor Main */}
@@ -163,6 +207,28 @@ export default function Room() {
                                 <button onClick={() => setAiSuggestion('')} className="hover:text-red-500 transition ml-1">Reject</button>
                             </div>
                         )}
+                        <div className="flex items-center gap-2 bg-slate-100 dark:bg-slate-800 rounded-lg p-1 ml-2">
+                            <select
+                                value={selectedLanguage}
+                                onChange={(e) => setSelectedLanguage(e.target.value)}
+                                className="bg-transparent text-sm font-medium text-slate-700 dark:text-slate-300 outline-none cursor-pointer pl-2 pr-4 border-r border-slate-200 dark:border-slate-700"
+                            >
+                                {SUPPORTED_LANGUAGES.map(lang => (
+                                    <option key={lang.value} value={lang.value}>{lang.name}</option>
+                                ))}
+                            </select>
+                            <button
+                                onClick={handleRunCode}
+                                disabled={isCompiling}
+                                className={`flex items-center gap-1.5 px-3 py-1 text-sm font-medium rounded-md transition ${isCompiling
+                                        ? 'bg-slate-200 dark:bg-slate-700 text-slate-400 cursor-not-allowed'
+                                        : 'bg-green-500 hover:bg-green-600 text-white shadow-sm active:scale-95'
+                                    }`}
+                            >
+                                <Play size={14} fill={isCompiling ? 'none' : 'currentColor'} />
+                                {isCompiling ? 'Running...' : 'Run'}
+                            </button>
+                        </div>
                         <button
                             onClick={handleAskAI}
                             className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-lg hover:opacity-90 transition active:scale-95 shadow-sm ml-2"
@@ -190,6 +256,36 @@ export default function Room() {
                         }}
                     />
                 </div>
+
+                {/* Output Terminal Pane */}
+                {isOutputVisible && (
+                    <div className="h-48 border-t border-slate-200 dark:border-slate-800 bg-[#1e2227] flex flex-col shrink-0">
+                        <div className="flex items-center justify-between px-3 py-1.5 bg-[#282c34] border-b border-[#1e2227]">
+                            <div className="flex items-center gap-2 text-xs font-semibold text-slate-400 tracking-wider">
+                                <TerminalSquare size={14} />
+                                OUTPUT
+                            </div>
+                            <button
+                                onClick={() => setIsOutputVisible(false)}
+                                className="text-slate-500 hover:text-slate-300 transition text-xs"
+                            >
+                                Close
+                            </button>
+                        </div>
+                        <div className="flex-1 p-3 overflow-auto font-mono text-sm">
+                            {output ? (
+                                <pre className={`whitespace-pre-wrap ${output.includes('Error:') || output.includes('Compilation Error') || output.includes('Runtime Error')
+                                        ? 'text-red-400'
+                                        : 'text-slate-300'
+                                    }`}>
+                                    {output}
+                                </pre>
+                            ) : (
+                                <div className="text-slate-500 italic">Click "Run" to execute your code...</div>
+                            )}
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Sidebar (Chat & Users) */}
@@ -220,8 +316,8 @@ export default function Room() {
                             <div key={i} className={`flex flex-col ${msg.username === username ? 'items-end' : 'items-start'}`}>
                                 <span className="text-[10px] text-slate-500 mb-1 px-1">{msg.username}</span>
                                 <div className={`px-3 py-2 rounded-2xl text-sm ${msg.username === username
-                                        ? 'bg-indigo-600 text-white rounded-tr-sm'
-                                        : 'bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-tl-sm'
+                                    ? 'bg-indigo-600 text-white rounded-tr-sm'
+                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-tl-sm'
                                     }`}>
                                     {msg.text}
                                 </div>
